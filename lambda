@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+
+import argparse, boto3, importlib.util, io, json, os, requests, sys, zipfile
+from pprint import pprint
+import botocore.session
+
+# configurable variables
+# ..
+LAMBDA_PATH = os.environ["LAMBDA_PATH"]
+ROLE = os.environ.get("ROLE", None)
+
+# Create arg parsers and add base
+# ...
+
+parser = argparse.ArgumentParser()
+parser.add_argument('function', metavar='N', type=str, nargs=1, help='Function name to execute action on')   
+parser.add_argument('action', metavar='N', type=str, nargs=1, help='Action to execute')
+
+parser.add_argument('--publish', action='store_true', help='Deploy, New: If true publishes to a new version, if false publishes into $latest. Default is false')
+parser.add_argument('-p', action='store_true', help='Deploy: If true publishes to a new version, if false publishes into $latest. Default is false')
+
+parser.add_argument('--alias', metavar='N', type=str, nargs='?', help='Deploy: If specified it assigns the new version or $latest into this alias')
+parser.add_argument('-a', metavar='N', type=str, nargs='?', help='Deploy: If specified it assigns the new version or $latest into this alias')
+
+parser.add_argument('--event', metavar='N', type=str, nargs='?', help='Invoke: The event to pass as arguments')
+parser.add_argument('-e', metavar='N', type=str, nargs='?', help='Invoke: The event to pass as arguments')
+
+parser.add_argument('--role', metavar='N', type=str, nargs='?', help='New, Update: Role assigned to new or updated function')
+parser.add_argument('-r', metavar='N', type=str, nargs='?', help='New, Update: Role assigned to new or updated function')
+
+parser.add_argument('--runtime', metavar='N', type=str, nargs='?', help='New: Runtime environment, e.g. python3.6')
+parser.add_argument('-rt', metavar='N', type=str, nargs='?', help='New: Runtime environment, e.g. python3.6')
+
+parser.add_argument('--save', action='store_true', help='Get: Saves the version in your lambda folder')
+parser.add_argument('-s', action='store_true', help='Get: Saves the version in your lambda folder')
+
+parser.add_argument('--description', metavar='N', type=str, nargs='?', help='New: Description')
+parser.add_argument('-d', metavar='N', type=str, nargs='?', help='New: Description')
+
+parser.add_argument('--timeout', metavar='N', type=int, nargs='?', help='New: Timeout')
+parser.add_argument('-t', metavar='N', type=int, nargs='?', help='New: Timeout')
+
+parser.add_argument('--version', metavar='N', type=str, nargs='?', help='New: Timeout')
+parser.add_argument('-v', metavar='N', type=str, nargs='?', help='New: Timeout')
+
+# Init arguments
+# ...
+args = parser.parse_args()
+action = args.action[0]
+alias = args.alias or args.a
+description = args.description or args.d
+event = args.event or args.e or '{}'
+folder_name = args.function[0]
+function_name = folder_name
+publish = args.publish or args.p
+qualifier = args.alias or args.a or args.version or args.v
+role = ROLE or args.role or args.r or os.environ["ROLE"]
+runtime = args.runtime or args.rt or 'python3.6'
+save = args.save or args.s
+timeout = args.timeout or args.t
+version = args.version or args.v or '$LATEST'
+
+# form dir_path
+# ...
+dir_path = LAMBDA_PATH + folder_name
+    
+# lambda
+# ...
+lambda_client = boto3.client("lambda", aws_access_key_id=os.environ["AWS_ACCESS_KEY_ID"], aws_secret_access_key=os.environ["AWS_SECRET_ACCESS_KEY"], region_name=os.environ["AWS_DEFAULT_REGION"])
+
+# zip helper
+# ...
+zip_name = "Archive.zip"
+zip_path = dir_path + "/" + zip_name
+exclude_file = ["main.cpython-36.pyc", ".DS_Store", "__init__.py", "main.pyc", zip_name]
+
+def zipDir(dirPath, zipPath):
+    zipf = zipfile.ZipFile(zipPath , mode='w')
+    lenDirPath = len(dirPath)
+    for root, direc , files in os.walk(dirPath):
+        for file in files:
+            if os.path.basename(os.path.normpath(root)) == basename and file in exclude_file:
+                continue 
+            filePath = os.path.join(root, file)
+            zipf.write(filePath , filePath[lenDirPath :] )
+    zipf.close()
+    
+# actions
+# ...
+# ...
+# ...
+
+if action == "create":
+
+    # create directory and main.py
+    # ...
+    
+    pprint("Creating directory %s..." % (dir_path))
+    os.makedirs(dir_path)
+    main_file = open(dir_path + "/main.py", 'w')
+    main_file.write("\n\ndef handler(event, context):")
+    main_file.close()
+    
+    # create ZIP
+    # ...
+    
+    pprint("Compressing directory %s..." % (dir_path))
+    basename = os.path.basename(dir_path)
+    zipDir(dir_path, zip_path)
+    
+    zip = open(zip_path, 'rb').read()
+    
+    kargs = {"FunctionName" : function_name, "Runtime" : runtime, "Role" : role, "Handler" : "main.handler", "Code" : {"ZipFile" : zip}}
+    
+    if description is not None:
+        kargs["Description"] = description
+    if timeout is not None:
+        kargs["Timeout"] = timeout
+    if publish is not None:
+        kargs["Publish"] = publish
+
+    pprint("Creating function %s..." % (function_name))
+    res = lambda_client.create_function(**kargs)
+    
+    
+if action == "create_alias":
+    
+    kargs = {"FunctionName" : function_name, "Name" : alias, "FunctionVersion" : version}
+    
+    if description:
+        kargs["Description"] = description
+        
+    pprint("Creating function %s..." % (function_name))
+    res = lambda_client.create_alias(**kargs)    
+    pprint(res)
+    
+    
+if action == "delete":
+
+    res = lambda_client.delete_function(FunctionName=function_name, Qualifier=qualifier)
+    pprint(res)
+    
+    
+if action == "get":
+
+    kargs = {"FunctionName" : function_name}
+    
+    if qualifier is not None:
+        kargs["qualifier"] = qualifier
+        
+    res = lambda_client.get_function(**kargs)
+    pprint(res)
+    
+    if save:
+        r = requests.get(res["Code"]["Location"])
+        z = zipfile.ZipFile(io.BytesIO(r.content))
+        path = LAMBDA_PATH + function_name + ""
+        os.makedirs(path)
+        z.extractall(path)
+
+
+if action == "get_aliases":
+
+    res = lambda_client.list_aliases(FunctionName= function_name)
+    pprint(res)
+    
+    
+if action == "get_configuration":
+    
+    res = lambda_client.get_function_configuration(FunctionName= function_name)
+    pprint(res)
+
+    
+if action == "invoke":
+
+    event = json.loads(event)
+    event["Development"] = True
+    
+    payload = json.dumps(event).encode()
+    pprint("Invoking function %s with event %s..." % (function_name, event))
+    res = lambda_client.invoke(FunctionName=function_name, Payload = payload)
+    res_payload = res["Payload"].read().decode()
+    pprint(json.loads(res_payload))
+
+
+if action == "invoke_local":
+    
+    event = json.loads(event)
+    event["Development"] = True
+
+    spec = importlib.util.spec_from_file_location("module.name", "%s%s/main.py" % (LAMBDA_PATH, folder_name))
+    main = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(main)
+    pprint("Testing function %s with event %s..." % (function_name, event))
+    pprint(main.handler(event, None))
+    
+    
+if action == "update_alias":
+
+    kargs = {"FunctionName" : function_name, "Name" : alias}
+    
+    if version is not None:
+        kargs["FunctionVersion"] = version
+    if description is not None:
+        kargs["Description"] = description    
+    res = lambda_client.update_alias(**kargs)
+    pprint(res)
+    
+    
+if action == "update_code":
+
+    # create ZIP
+    # ...
+    
+    pprint("Compressing directory %s..." % (dir_path))
+    basename = os.path.basename(dir_path)
+    pprint(os.path.join(folder_name, dir_path))
+    zipDir(dir_path, zip_path)
+
+    pprint("Deploying function %s..." % (function_name))
+    res = lambda_client.update_function_code(FunctionName= function_name, ZipFile=open(zip_path, 'rb').read(), Publish=publish)
+    pprint(res)
+
+
+if action == "update_configuration":
+
+    kargs = {"FunctionName" : function_name}
+    
+    if role is not None:
+        kargs["Role"] = role
+    if runtime is not None:
+        kargs["Runtime"] = runtime
+    if description is not None:
+        kargs["Description"] = description
+    if timeout is not None:
+        kargs["Timeout"] = timeout
+    
+    res = lambda_client.update_function_configuration(**kargs)
+    
+    
+    
+pprint("Done")
